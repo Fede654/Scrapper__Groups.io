@@ -6,50 +6,66 @@ from playwright.async_api import async_playwright, TimeoutError
 
 # --- Configuration ---
 AUTH_FILE = Path("auth_state.json")
+# The base URL for the list of all threads (topics)
 GROUP_URL = "https://ardc.groups.io/g/44net/topics"
 DATA_FILE = Path("scraped_data.json")
 HEADLESS_MODE = True # Set to False to watch the browser work
-SCROLL_DELAY = 3 # Seconds to wait between scrolls
-SCROLL_PATIENCE = 5 # How many times to retry scrolling when no new content is found
+# Polite delay between clicking "next" page
+PAGE_LOAD_DELAY = 2
 
 async def get_all_thread_urls(page):
-    """Navigates to the topics page and scrolls until all threads are loaded."""
-    print(f"Navigating to group topics: {GROUP_URL}")
+    """Navigates to the topics page and clicks 'next' until all thread URLs are collected."""
+    print(f"Navigating to group topics list: {GROUP_URL}")
     await page.goto(GROUP_URL, wait_until="domcontentloaded")
-    await page.wait_for_selector('a[href*="/g/44net/topic/"]', timeout=30000)
     
-    print("Starting to scroll to load all threads. This may take a while...")
-    
-    # Selector for the links to individual threads
+    # Wait for the first page of topics to ensure it's loaded.
+    # Note: Individual thread links contain '/topic/' (singular). This is correct.
     thread_link_selector = 'a[href*="/g/44net/topic/"]'
-    
+    await page.wait_for_selector(thread_link_selector, timeout=30000)
+    print("Initial page loaded. Starting to collect URLs via pagination.")
+
     seen_urls = set()
-    patience_counter = 0
+    page_count = 1
     
-    while patience_counter < SCROLL_PATIENCE:
-        initial_url_count = len(seen_urls)
+    # The main loop for pagination
+    while True:
+        print(f"--- Scraping Page {page_count} ---")
         
+        # Find all thread links on the CURRENT page
         links = await page.locator(thread_link_selector).all()
+        
+        current_page_urls = set()
         for link in links:
             href = await link.get_attribute('href')
             if href:
                 full_url = f"https://groups.io{href}"
-                seen_urls.add(full_url)
-
-        if len(seen_urls) > initial_url_count:
-            print(f"Found {len(seen_urls)} unique thread URLs...")
-            patience_counter = 0 # Reset patience because we found new content
-        else:
-            patience_counter += 1
-            print(f"No new threads found on this scroll. Patience: {patience_counter}/{SCROLL_PATIENCE}")
-
-        # Scroll to the bottom of the page
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                current_page_urls.add(full_url)
         
-        # Wait for potential new content to load
-        time.sleep(SCROLL_DELAY)
+        new_urls_found = len(current_page_urls - seen_urls)
+        print(f"Found {new_urls_found} new thread URLs on this page.")
+        seen_urls.update(current_page_urls)
+        print(f"Total unique URLs so far: {len(seen_urls)}")
 
-    print(f"\n✅ Finished scrolling. Found a total of {len(seen_urls)} thread URLs.")
+        # --- MODIFIED: Use lowercase 'next' for the button name ---
+        # Find the 'next' button to see if we can continue.
+        # This locator is specific and robust.
+        next_button = page.get_by_role("link", name="next", exact=True)
+
+        # Check if the 'next' button exists and is visible on the page
+        if await next_button.count() > 0 and await next_button.is_visible():
+            print("Found 'next' button. Clicking to load next page...")
+            await next_button.click()
+            # Wait for the next page to load fully.
+            await page.wait_for_load_state("domcontentloaded")
+            time.sleep(PAGE_LOAD_DELAY) 
+            page_count += 1
+        else:
+            # If no 'next' button is found, we are on the last page
+            print("\nNo 'next' button found. Assuming we've reached the last page.")
+            break # Exit the loop
+
+    print(f"\n✅ Finished paginating through all {page_count} pages.")
+    print(f"Collected a total of {len(seen_urls)} unique thread URLs.")
     return list(seen_urls)
 
 
@@ -67,23 +83,21 @@ async def main():
         try:
             thread_urls = await get_all_thread_urls(page)
             
-            # For now, we'll just save the list of URLs.
-            # In the next step, we'll iterate through them to scrape content.
-            print(f"\nSaving {len(thread_urls)} URLs to a temporary file...")
-            with open("temp_thread_urls.json", "w") as f:
+            # Save the list of URLs. We will use this file in the next checkpoint.
+            print(f"\nSaving {len(thread_urls)} URLs to a file for the next step...")
+            with open("thread_urls.json", "w") as f:
                 json.dump(thread_urls, f, indent=2)
 
-            print("Checkpoint 2 complete! All thread URLs have been collected.")
+            print("✅ Checkpoint 2 complete! All thread URLs have been collected in 'thread_urls.json'.")
             
-            # --- NEXT STEPS (to be implemented) ---
-            # scraped_data = {}
-            # for url in thread_urls:
-            #     # scrape_single_thread(page, url) ...
-            #     pass
-
+        except TimeoutError:
+            print("\n❌ A timeout occurred. This could be due to a slow network connection,")
+            print("   or a change in the website's structure. Try running again or")
+            print("   increasing the timeout in the `wait_for_selector` call.")
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An unexpected error occurred: {e}")
         finally:
+            print("Closing browser.")
             await browser.close()
 
 
