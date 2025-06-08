@@ -6,66 +6,65 @@ from playwright.async_api import async_playwright, TimeoutError
 
 # --- Configuration ---
 AUTH_FILE = Path("auth_state.json")
+# Input file from Checkpoint 2
 URLS_FILE = Path("thread_urls.json") 
+# The final structured data output
 DATA_FILE = Path("scraped_data.json") 
-HEADLESS_MODE = True
+HEADLESS_MODE = True # Set to False to watch the browser work
+# Save progress after every N threads to prevent data loss on long runs
 SAVE_EVERY = 10 
 
-# --- UPDATED function for Checkpoint 3 ---
+# --- Helper function for Checkpoint 3 ---
 
 async def scrape_thread_page(page, url):
     """
-    Visits a single thread URL and extracts the title and all messages
-    using the CORRECTED selectors based on the provided HTML sample.
+    Visits a single thread URL and extracts the title and all messages.
+    Returns a dictionary with the scraped data.
     """
     print(f"-> Visiting: {url}")
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        # Wait for the main message container element to be present.
-        await page.wait_for_selector("div.expanded-message", timeout=30000) 
+        # Wait for the main message container to be present. This is a good sign the page is ready.
+        await page.wait_for_selector("div.vcard", timeout=30000) 
     except TimeoutError:
-        print("   -> ⚠️ Timed out waiting for page content. Skipping.")
+        print("   -> ⚠️ Timed out waiting for page to load. Skipping.")
         return None
     except Exception as e:
         print(f"   -> ❌ Error navigating to page: {e}. Skipping.")
         return None
 
-    # --- Scrape Thread Title (Corrected) ---
+    # --- Scrape Thread Title ---
     try:
-        # The most reliable title is the page's <title> tag.
-        full_title = await page.title()
-        # Parse "44net@ardc.groups.io | 44. And aredn" to get "44. And aredn"
-        title_parts = full_title.split('|')
-        title = title_parts[-1].strip() if len(title_parts) > 1 else full_title
+        title = await page.locator("h1#topic-title").text_content()
     except Exception:
         title = "Title not found"
         print("   -> ⚠️ Could not find thread title.")
         
-    # --- Scrape all messages (Corrected) ---
+    # --- Scrape all messages ---
     messages = []
-    # Each message is in a 'div.expanded-message'
-    message_elements = await page.locator("div.expanded-message").all()
+    # Each message is contained within a 'div.vcard.row'
+    message_elements = await page.locator("div.vcard.row").all()
     print(f"   -> Found {len(message_elements)} messages in thread.")
 
     for msg_element in message_elements:
         author, timestamp, body = "N/A", "N/A", "N/A"
         try:
-            # Author is in a <u> tag
-            author = await msg_element.locator("u").text_content()
+            # The author's name is in a span with class 'fn'
+            author = await msg_element.locator("span.fn").text_content()
         except Exception:
             print("      -> Warning: Could not find author for a message.")
 
         try:
-            # Timestamp is in the `title` attribute of a <span>
-            timestamp_el = msg_element.locator("span[title]")
-            timestamp = await timestamp_el.get_attribute("title")
+            # The timestamp is in a 'time' element with a datetime attribute
+            timestamp_el = msg_element.locator("time")
+            timestamp = await timestamp_el.get_attribute("datetime")
         except Exception:
             print("      -> Warning: Could not find timestamp for a message.")
 
         try:
-            # Message body is in 'div.user-content'
-            body = await msg_element.locator("div.user-content").inner_text()
-            # Clean up the body text
+            # The message body is in 'div.msg-body'
+            body = await msg_element.locator("div.msg-body").inner_text()
+            # Clean up the body text a bit
             body = "\n".join(line.strip() for line in body.splitlines() if line.strip())
         except Exception:
             print("      -> Warning: Could not find body for a message.")
@@ -83,17 +82,21 @@ async def scrape_thread_page(page, url):
     }
 
 
-# --- Main execution logic (Unchanged) ---
+# --- Main execution logic ---
 
 async def main():
+    # --- Input and Authentication Checks ---
     if not AUTH_FILE.exists():
-        print(f"❌ Authentication file '{AUTH_FILE}' not found. Run login script first.")
+        print(f"❌ Authentication file '{AUTH_FILE}' not found.")
+        print("Please run '01_create_auth_state.py' first to log in.")
         return
         
     if not URLS_FILE.exists():
-        print(f"❌ Thread URLs file '{URLS_FILE}' not found. Run URL collection script first.")
+        print(f"❌ Thread URLs file '{URLS_FILE}' not found.")
+        print("Please run the Checkpoint 2 script first to generate it.")
         return
 
+    # --- Load URLs and set up for resume ---
     with open(URLS_FILE, 'r') as f:
         urls_to_scrape = json.load(f)
 
@@ -103,6 +106,7 @@ async def main():
         with open(DATA_FILE, 'r') as f:
             scraped_data = json.load(f)
     
+    # Filter out URLs that have already been scraped
     already_scraped_urls = set(scraped_data.keys())
     urls_to_process = [url for url in urls_to_scrape if url not in already_scraped_urls]
     
@@ -110,9 +114,10 @@ async def main():
         print("✅ All URLs have already been scraped. Nothing to do.")
         return
         
-    print(f"Total URLs: {len(urls_to_scrape)}. Already scraped: {len(already_scraped_urls)}.")
+    print(f"Found {len(urls_to_scrape)} total URLs. {len(already_scraped_urls)} already scraped.")
     print(f"Starting to scrape {len(urls_to_process)} remaining threads...")
     
+    # --- Main Scraping Loop ---
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS_MODE)
         context = await browser.new_context(storage_state=AUTH_FILE)
@@ -125,9 +130,11 @@ async def main():
                 
                 thread_data = await scrape_thread_page(page, url)
                 if thread_data:
+                    # Use the URL as the key for easy lookup and resuming
                     scraped_data[url] = thread_data
                 
-                if (i + 1) % SAVE_EVERY == 0 or i == total_urls - 1:
+                # Save progress periodically
+                if (i + 1) % SAVE_EVERY == 0:
                     print(f"\n--- Saving progress ({i+1}/{total_urls} done) ---")
                     with open(DATA_FILE, "w") as f:
                         json.dump(scraped_data, f, indent=2)
