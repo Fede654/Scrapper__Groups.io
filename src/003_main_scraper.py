@@ -10,7 +10,7 @@ AUTH_FILE = Path("auth_state.json")
 URLS_FILE = Path("thread_urls.json") 
 # The final structured data output
 DATA_FILE = Path("scraped_data.json") 
-HEADLESS_MODE = True # Set to False to watch the browser work
+HEADLESS_MODE = False # Set to False to watch the browser work
 # Save progress after every N threads to prevent data loss on long runs
 SAVE_EVERY = 10 
 

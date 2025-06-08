@@ -49,7 +49,8 @@ async def get_all_thread_urls_by_looping(page):
         for link in links:
             href = await link.get_attribute('href')
             if href:
-                full_url = f"https://groups.io{href}"
+                # full_url = f"https://groups.io{href}"
+                full_url = f"{href}"
                 seen_urls.add(full_url)
         
         new_urls_found = len(seen_urls) - initial_count
